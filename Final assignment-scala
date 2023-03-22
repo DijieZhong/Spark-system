@@ -1,0 +1,114 @@
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.types.{StringType,DoubleType,StructField,StructType,IntegerType}
+import org.apache.spark.ml.feature.VectorAssembler
+import org.apache.spark.ml.linalg.Vectors
+import org.apache.spark.ml.{Model,Pipeline,PipelineModel,PipelineStage}
+import org.apache.spark.ml.evaluation.RegressionEvaluator
+//线性：
+import org.apache.spark.ml.regression.LinearRegression
+//决策树：
+import org.apache.spark.ml.regression.DecisionTreeRegressionModel
+import org.apache.spark.ml.regression.DecisionTreeRegressor
+//随机森林：
+import org.apache.spark.ml.regression.{RandomForestRegressionModel, RandomForestRegressor}
+
+//生成DataFrame
+val schema:StructType = StructType(Array(StructField("Year",IntegerType),
+	StructField("Month",IntegerType),
+	StructField("DayofMonth",IntegerType),
+	StructField("DayofWeek",DoubleType),
+	StructField("DepTime", DoubleType),
+	StructField("CRSDepTime", DoubleType),
+	StructField("ArrTime", DoubleType),
+	StructField("CRSArrTime", DoubleType),
+	StructField("UniqueCarrier", StringType),
+	StructField("FlightNum", StringType),
+	StructField("TailNum", StringType),
+	StructField("ActualElapsedTime", DoubleType),
+	StructField("CRSElapsedTime",  DoubleType),
+	StructField("AirTime",  DoubleType),
+	StructField("ArrDelay",  DoubleType),
+	StructField("DepDelay",  DoubleType),
+	StructField("Origin", StringType),
+	StructField("Dest",  StringType),
+	StructField("Distance",  DoubleType),
+	StructField("TaxiIn",  DoubleType),
+ 	StructField("TaxiOut",  DoubleType),
+	StructField("Cancelled",  IntegerType),
+	StructField("CancellationCode",  StringType),
+	StructField("Diverted",  IntegerType),
+	StructField("CarrierDelay", DoubleType),
+	StructField("WeatherDelay",  DoubleType),
+ 	StructField("NASDelay",  DoubleType),
+	StructField("SecurityDelay",  DoubleType),
+	StructField("LateAircraftDelay",  DoubleType)))
+val csvFilePath = "/home1/cufe/data/airdelay_small.csv"
+val df = spark.read.format("csv").schema(schema).option("header","true").load(csvFilePath)
+df.describe().show()
+
+//数据清洗
+//删除空白行
+val df1 = df.na.drop("all")
+df1.show()
+//空值代替
+val df2 = df1.na.fill("unknown")
+val df3 = df2.na.replace("*",Map[Any,Any]("NA"->"unknown"))
+
+//描述分析
+df3.describe().show()
+//因变量分析ArrDelay
+df3.describe("ArrDelay").show()
+df3.where("ArrDelay = 1779.0").show()
+df3.where("ArrDelay = -1238.0").show()
+//自变量分析
+val aircount = df3.groupBy("UniqueCarrier").count()
+aircount.orderBy($"count".desc).show()
+
+df3.describe("CarrierDelay").show()
+df3.describe("WeatherDelay").show()
+df3.describe("NASDelay").show()
+df3.describe("SecurityDelay").show()
+df3.describe("LateAircraftDelay").show()
+df3.select("UniqueCarrier","ArrDelay","CarrierDelay").orderBy($"CarrierDelay".desc).show()
+df3.select("ArrDelay","WeatherDelay").orderBy($"WeatherDelay".desc).show()
+df3.select("ArrDelay","NASDelay").orderBy($"NASDelay".desc).show()
+df3.select("ArrDelay","SecurityDelay").orderBy($"SecurityDelay".desc).show()
+df3.select("ArrDelay","LateAircraftDelay").orderBy($"LateAircraftDelay".desc).show()
+
+//线性回归
+val assembler = new VectorAssembler().setHandleInvalid("skip").setInputCols(Array("Year","Month","DayofMonth","DayofWeek","DepTime","CRSDepTime","ActualElapsedTime","CRSElapsedTime","AirTime","DepDelay","Distance","TaxiIn","TaxiOut","Cancelled","Diverted","CarrierDelay","WeatherDelay","NASDelay","SecurityDelay","LateAircraftDelay")).setOutputCol("features")
+val Array(trainingData, testData) = df3.randomSplit(Array(0.7, 0.3))
+val lr = new LinearRegression().setMaxIter(10).setRegParam(0.3).setElasticNetParam(0.8).setFeaturesCol("features").setLabelCol("ArrDelay")
+val pipeline = new Pipeline().setStages(Array(assembler,lr))
+val LRmodel = pipeline.fit(trainingData)
+val LRpredictions = LRmodel.transform(testData)
+LRpredictions.select("prediction","ArrDelay","features").show(20)
+val evaluator = new RegressionEvaluator().setLabelCol("ArrDelay").setPredictionCol("prediction").setMetricName("rmse")
+val rmse = evaluator.evaluate(LRpredictions)
+println(s"Root Mean Squared Error (RMSE) on test data = $rmse")
+
+//决策树模型
+val assembler = new VectorAssembler().setHandleInvalid("skip").setInputCols(Array("Year","Month","DayofMonth","DayofWeek","DepTime","CRSDepTime","ActualElapsedTime","CRSElapsedTime","AirTime","DepDelay","Distance","TaxiIn","TaxiOut","Cancelled","Diverted","CarrierDelay","WeatherDelay","NASDelay","SecurityDelay","LateAircraftDelay")).setOutputCol("features")
+val Array(trainingData, testData) = df3.randomSplit(Array(0.7, 0.3))
+val dt = new DecisionTreeRegressor().setFeaturesCol("features").setLabelCol("ArrDelay")
+val pipeline0 = new Pipeline().setStages(Array(assembler, dt))
+val DTmodel = pipeline0.fit(trainingData)
+val DTpredictions = DTmodel.transform(testData)
+DTpredictions.select("prediction", "ArrDelay", "features").show(20)
+//误差分析
+val evaluator = new RegressionEvaluator().setLabelCol("ArrDelay").setPredictionCol("prediction").setMetricName("rmse")
+val rmse = evaluator.evaluate(DTpredictions)
+println(s"Root Mean Squared Error (RMSE) on test data = $rmse")
+
+//随机森林算法
+val assembler = new VectorAssembler().setHandleInvalid("skip").setInputCols(Array("Year","Month","DayofMonth","DayofWeek","DepTime","CRSDepTime","ActualElapsedTime","CRSElapsedTime","AirTime","DepDelay","Distance","TaxiIn","TaxiOut","Cancelled","Diverted","CarrierDelay","WeatherDelay","NASDelay","SecurityDelay","LateAircraftDelay")).setOutputCol("features")
+val Array(trainingData, testData) = df3.randomSplit(Array(0.7, 0.3))
+val rf = new RandomForestRegressor().setFeaturesCol("features").setLabelCol("ArrDelay")
+val pipeline1 = new Pipeline().setStages(Array(assembler, rf))
+val RFmodel = pipeline1.fit(trainingData)
+val RFpredictions = RFmodel.transform(testData)
+RFpredictions.select("prediction", "ArrDelay", "features").show(20)
+//误差分析
+val evaluator = new RegressionEvaluator().setLabelCol("ArrDelay").setPredictionCol("prediction").setMetricName("rmse")
+val rmse = evaluator.evaluate(RFpredictions)
+println(s"Root Mean Squared Error (RMSE) on test data = $rmse")
